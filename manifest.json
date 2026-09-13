@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Kite GTT Marker",
+  "version": "1.0.0",
+  "description": "Marks GTT orders that already have a matching holding/position with a suitcase icon, and marks holdings/positions that have an active GTT with a rocket icon.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://kite.zerodha.com/positions*",
+        "https://kite.zerodha.com/orders/gtt*",
+        "https://kite.zerodha.com/holdings*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
