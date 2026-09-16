@@ -96,10 +96,13 @@
   }
 
   function formatGttRow(t) {
+	
+
     const o = t.orders && t.orders[0];
     if (!o) return null;
     const trigger = (t.condition.trigger_values || [])[0];
     const txn = o.transaction_type; // BUY / SELL
+	const color = txn === 'SELL' ? '#e04040' : '#2196f3';
     const qty = o.quantity;
     const limitPrice = o.price;
     const orderType = o.order_type; // LIMIT / MARKET
@@ -108,8 +111,7 @@
     return {
       id: t.id,
       date,
-      line: `${txn} ${qty} @ trigger ${triggerStr}, ${orderType} ${limitPrice}`
-    };
+	  line: `<span style="font-weight:700;color:${color}">${txn}</span> ${qty} @ trigger ${triggerStr}, ${orderType} ${limitPrice}`    };
   }
 
   // ---------- expand row ----------
