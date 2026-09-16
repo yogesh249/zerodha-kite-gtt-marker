@@ -1,7 +1,59 @@
+/* --- icon base --- */
 .kgm-icon {
   display: inline-block;
   margin-right: 6px;
   font-size: 12px;
   line-height: 1;
   vertical-align: middle;
+}
+
+/* --- rocket button --- */
+button.kgm-rocket-btn {
+  all: unset;
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 12px;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 2px;
+  transition: background 0.15s;
+}
+button.kgm-rocket-btn:hover {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+/* --- expand row --- */
+tr.kgm-expand-row td.kgm-expand-td {
+  padding: 6px 12px 8px 32px;
+  background: rgba(0, 0, 0, 0.03);
+  border-top: none;
+}
+
+.kgm-gtt-entry {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 11px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+  color: inherit;
+}
+.kgm-gtt-entry:last-child {
+  border-bottom: none;
+}
+
+.kgm-gtt-id {
+  color: #888;
+  min-width: 72px;
+  font-size: 10px;
+}
+.kgm-gtt-date {
+  color: #888;
+  min-width: 80px;
+  font-size: 10px;
+}
+.kgm-gtt-line {
+  font-weight: 500;
 }

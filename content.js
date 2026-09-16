@@ -1,16 +1,9 @@
 /**
  * Kite GTT Marker
  *
- * Runs inside the already-logged-in kite.zerodha.com tab, so it never
- * stores or hardcodes any token/cookie itself. At call time it reads the
- * `enctoken` cookie the page already has (same technique the page's own
- * JS uses) and calls Kite's internal endpoints with it.
- *
- * Pages:
- *   /orders/gtt   -> suitcase (💼) before any ACTIVE GTT row whose
- *                    tradingsymbol also shows up in holdings or positions
- *   /holdings*    -> rocket (🚀) before any holding that has an ACTIVE GTT
- *   /positions*   -> rocket (🚀) before any position that has an ACTIVE GTT
+ * /orders/gtt   -> suitcase (💼) on active GTT rows with a matching holding/position
+ * /holdings*    -> rocket (🚀) on holdings that have an active GTT; clickable to expand GTT details
+ * /positions*   -> rocket (🚀) on positions that have an active GTT; clickable to expand GTT details
  */
 (function () {
   'use strict';
@@ -18,17 +11,17 @@
   const ICON_SUITCASE = '💼';
   const ICON_ROCKET = '🚀';
   const MARK_ATTR = 'data-kgm-icon';
+  const EXPAND_ROW_ATTR = 'data-kgm-expand';
 
-  const API_REFRESH_MS = 20000; // how often we re-hit the Kite API
-  const DOM_DEBOUNCE_MS = 250; // how fast we re-apply cached markers after DOM churn
+  const API_REFRESH_MS = 20000;
+  const DOM_DEBOUNCE_MS = 250;
 
-  // cache.keys holds the set of "matching" row keys for the current page:
-  //   positions -> Set<number> of instrument_token
-  //   holdings  -> Set<string> of isin
-  //   gtt       -> Set<string> of trigger id
-  let cache = { mode: null, keys: new Set(), icon: null };
+  // For positions/holdings:
+  //   cache.map: Map<rowKey, GTT[]>  (rowKey -> all matching active GTT triggers)
+  // For gtt:
+  //   cache.keys: Set<string> of trigger ids to mark with suitcase
+  let cache = { mode: null, map: new Map(), keys: new Set(), icon: null };
   let domDebounceTimer = null;
-  let apiTimer = null;
 
   // ---------- auth ----------
 
@@ -39,46 +32,27 @@
 
   async function apiGet(path) {
     const token = getEncToken();
-    if (!token) {
-      console.warn('[Kite GTT Marker] no enctoken cookie found, skipping', path);
-      return null;
-    }
+    if (!token) { console.warn('[KGM] no enctoken', path); return null; }
     try {
       const res = await fetch(`https://kite.zerodha.com${path}`, {
         credentials: 'include',
         headers: { Authorization: `enctoken ${token}` }
       });
-      if (!res.ok) {
-        console.warn('[Kite GTT Marker] request failed', path, res.status);
-        return null;
-      }
+      if (!res.ok) { console.warn('[KGM] request failed', path, res.status); return null; }
       const json = await res.json();
-      if (json.status !== 'success') return null;
-      return json.data;
-    } catch (e) {
-      console.warn('[Kite GTT Marker] fetch error', path, e);
-      return null;
-    }
+      return json.status === 'success' ? json.data : null;
+    } catch (e) { console.warn('[KGM] fetch error', path, e); return null; }
   }
 
-  // ---------- data fetchers ----------
-  // Kite's DOM doesn't render the raw tradingsymbol string (e.g.
-  // "NIFTY2691523000PE") anywhere — it shows a human-readable label
-  // instead. So instead of text-matching, we join rows to API data via
-  // stable identifiers already present in each row's data-uid attribute:
-  //   positions row data-uid: "position.{instrument_token}.{product}{n}"
-  //   holdings row data-uid:  "{isin}"
-  //   gtt row data-uid:       "{trigger_id}"
+  // ---------- fetchers ----------
 
   async function fetchActiveGttTriggers() {
     const data = await apiGet('/oms/gtt/triggers');
-    if (!data) return [];
-    return data.filter((t) => t.status === 'active');
+    return (data || []).filter((t) => t.status === 'active');
   }
 
   async function fetchHoldings() {
-    const data = await apiGet('/oms/portfolio/holdings');
-    return data || [];
+    return (await apiGet('/oms/portfolio/holdings')) || [];
   }
 
   async function fetchPositions() {
@@ -87,21 +61,18 @@
     return [...(data.net || []), ...(data.day || [])];
   }
 
-  // ---------- page detection ----------
+  // ---------- page ----------
 
   function detectMode() {
-    const path = location.pathname;
-    if (path.startsWith('/orders/gtt')) return 'gtt';
-    if (path.startsWith('/holdings')) return 'holdings';
-    if (path.startsWith('/positions')) return 'positions';
+    const p = location.pathname;
+    if (p.startsWith('/orders/gtt')) return 'gtt';
+    if (p.startsWith('/holdings')) return 'holdings';
+    if (p.startsWith('/positions')) return 'positions';
     return null;
   }
 
-  // ---------- matching / DOM ----------
+  // ---------- DOM helpers ----------
 
-  // Every row across positions/holdings/gtt has a td whose class list
-  // includes "instrument" (verified against the real Kite DOM) — this is
-  // where we prepend the icon, regardless of which page we're on.
   function instrumentCell(row) {
     return row.querySelector('td[class*="instrument"]');
   }
@@ -113,58 +84,160 @@
       const m = uid.match(/^position\.(\d+)\./);
       return m ? Number(m[1]) : null;
     }
-    // holdings: uid is the isin. gtt: uid is the trigger id. Both used as-is.
-    return uid;
+    return uid; // holdings -> isin, gtt -> trigger id
   }
 
-  function injectIcon(cell, icon) {
-    if (!cell) return;
-    if (cell.getAttribute(MARK_ATTR) === icon) return; // already marked with this icon
-    // remove any stale icon from a previous mode/refresh
-    const existing = cell.querySelector(`span.kgm-icon`);
-    if (existing) existing.remove();
+  // ---------- GTT detail formatting ----------
+
+  function formatDate(str) {
+    // "2026-09-11 15:27:35" -> "11 Sep 2026"
+    const d = new Date(str.replace(' ', 'T'));
+    return isNaN(d) ? str : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  function formatGttRow(t) {
+    const o = t.orders && t.orders[0];
+    if (!o) return null;
+    const trigger = (t.condition.trigger_values || [])[0];
+    const txn = o.transaction_type; // BUY / SELL
+    const qty = o.quantity;
+    const limitPrice = o.price;
+    const orderType = o.order_type; // LIMIT / MARKET
+    const date = formatDate(t.created_at);
+    const triggerStr = trigger != null ? trigger : '—';
+    return {
+      id: t.id,
+      date,
+      line: `${txn} ${qty} @ trigger ${triggerStr}, ${orderType} ${limitPrice}`
+    };
+  }
+
+  // ---------- expand row ----------
+
+  function expandRowId(row) {
+    return `kgm-expand-${row.getAttribute('data-uid')}`;
+  }
+
+  function removeExpandRow(row) {
+    const id = expandRowId(row);
+    const old = document.getElementById(id);
+    if (old) old.remove();
+    row.removeAttribute(EXPAND_ROW_ATTR);
+  }
+
+  function insertExpandRow(row, gtts) {
+    removeExpandRow(row); // clear any old one first
+    const colCount = row.querySelectorAll('td').length || 8;
+    const id = expandRowId(row);
+
+    const details = gtts.map(formatGttRow).filter(Boolean);
+    if (!details.length) return;
+
+    const html = details.map((d) =>
+      `<div class="kgm-gtt-entry">
+        <span class="kgm-gtt-id">GTT #${d.id}</span>
+        <span class="kgm-gtt-date">${d.date}</span>
+        <span class="kgm-gtt-line">${d.line}</span>
+      </div>`
+    ).join('');
+
+    const tr = document.createElement('tr');
+    tr.id = id;
+    tr.className = 'kgm-expand-row';
+    tr.innerHTML = `<td colspan="${colCount}" class="kgm-expand-td">${html}</td>`;
+
+    row.after(tr);
+    row.setAttribute(EXPAND_ROW_ATTR, '1');
+  }
+
+  function toggleExpand(row, gtts) {
+    if (row.getAttribute(EXPAND_ROW_ATTR)) {
+      removeExpandRow(row);
+    } else {
+      insertExpandRow(row, gtts);
+    }
+  }
+
+  // ---------- icon injection ----------
+
+  function injectSuitcase(cell) {
+    if (!cell || cell.getAttribute(MARK_ATTR) === 'suitcase') return;
+    const ex = cell.querySelector('span.kgm-icon');
+    if (ex) ex.remove();
     const span = document.createElement('span');
     span.className = 'kgm-icon';
-    span.textContent = icon;
+    span.textContent = ICON_SUITCASE;
     cell.prepend(span);
-    cell.setAttribute(MARK_ATTR, icon);
+    cell.setAttribute(MARK_ATTR, 'suitcase');
+  }
+
+  function injectRocket(cell, row, gtts) {
+    if (!cell) return;
+    // If already injected for this exact row, just refresh the gtts reference on the btn
+    const existing = cell.querySelector('button.kgm-rocket-btn');
+    if (existing) {
+      existing._kgmGtts = gtts;
+      cell.setAttribute(MARK_ATTR, 'rocket');
+      return;
+    }
+    const oldIcon = cell.querySelector('span.kgm-icon');
+    if (oldIcon) oldIcon.remove();
+
+    const btn = document.createElement('button');
+    btn.className = 'kgm-icon kgm-rocket-btn';
+    btn.textContent = ICON_ROCKET;
+    btn.title = 'Toggle GTT details';
+    btn._kgmGtts = gtts;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleExpand(row, btn._kgmGtts);
+    });
+    cell.prepend(btn);
+    cell.setAttribute(MARK_ATTR, 'rocket');
   }
 
   function clearAllIcons() {
+    // remove expand rows
+    document.querySelectorAll('tr.kgm-expand-row').forEach((el) => el.remove());
+    // remove icon spans/buttons and attrs
     document.querySelectorAll(`[${MARK_ATTR}]`).forEach((el) => {
-      const icon = el.querySelector('span.kgm-icon');
-      if (icon) icon.remove();
+      el.querySelector('.kgm-icon')?.remove();
       el.removeAttribute(MARK_ATTR);
+      el.removeAttribute(EXPAND_ROW_ATTR);
     });
   }
+
+  // ---------- apply ----------
 
   function applyMarkers() {
-    if (!cache.mode || !cache.keys.size) return;
+    const { mode, map, keys, icon } = cache;
+    if (!mode) return;
+
     const rows = document.querySelectorAll('tr[data-uid]');
     rows.forEach((row) => {
-      const key = rowKey(row, cache.mode);
+      const key = rowKey(row, mode);
       if (key == null) return;
-      if (!cache.keys.has(key)) return;
-      injectIcon(instrumentCell(row), cache.icon);
+      const cell = instrumentCell(row);
+
+      if (mode === 'gtt') {
+        if (keys.has(key)) injectSuitcase(cell);
+      } else {
+        const gtts = map.get(key);
+        if (gtts && gtts.length) injectRocket(cell, row, gtts);
+      }
     });
   }
 
-  // ---------- refresh cycle ----------
+  // ---------- refresh ----------
 
   async function refreshData() {
     const mode = detectMode();
-    if (!mode) {
-      cache = { mode: null, keys: new Set(), icon: null };
-      return;
-    }
+    if (!mode) { cache = { mode: null, map: new Map(), keys: new Set(), icon: null }; return; }
 
     const activeTriggers = await fetchActiveGttTriggers();
-    let keys;
-    let icon;
 
     if (mode === 'gtt') {
-      // suitcase on a GTT row if its instrument_token shows up in a real
-      // holding or an open position
       const [holdings, positions] = await Promise.all([fetchHoldings(), fetchPositions()]);
       const ownedTokens = new Set();
       for (const h of holdings) {
@@ -174,33 +247,43 @@
       for (const p of positions) {
         if ((p.quantity || 0) !== 0 && p.instrument_token != null) ownedTokens.add(p.instrument_token);
       }
-      keys = new Set();
+      const keys = new Set();
       for (const t of activeTriggers) {
         const tok = t.condition && t.condition.instrument_token;
         if (tok != null && ownedTokens.has(tok)) keys.add(String(t.id));
       }
-      icon = ICON_SUITCASE;
+      cache = { mode, map: new Map(), keys, icon: ICON_SUITCASE };
+
     } else if (mode === 'holdings') {
-      // rocket on a holding row (keyed by isin) if that instrument has an
-      // active GTT
-      const activeTokens = new Set(
-        activeTriggers.map((t) => t.condition && t.condition.instrument_token).filter((x) => x != null)
-      );
-      const holdings = await fetchHoldings();
-      keys = new Set();
-      for (const h of holdings) {
-        if (h.isin && activeTokens.has(h.instrument_token)) keys.add(h.isin);
+      // Build token -> [gtts] map
+      const tokenMap = new Map();
+      for (const t of activeTriggers) {
+        const tok = t.condition && t.condition.instrument_token;
+        if (tok == null) continue;
+        if (!tokenMap.has(tok)) tokenMap.set(tok, []);
+        tokenMap.get(tok).push(t);
       }
-      icon = ICON_ROCKET;
+      const holdings = await fetchHoldings();
+      const map = new Map(); // isin -> [gtts]
+      for (const h of holdings) {
+        if (!h.isin || !h.instrument_token) continue;
+        const gtts = tokenMap.get(h.instrument_token);
+        if (gtts && gtts.length) map.set(h.isin, gtts);
+      }
+      cache = { mode, map, keys: new Set(), icon: ICON_ROCKET };
+
     } else {
-      // positions: rocket if the row's instrument_token has an active GTT
-      keys = new Set(
-        activeTriggers.map((t) => t.condition && t.condition.instrument_token).filter((x) => x != null)
-      );
-      icon = ICON_ROCKET;
+      // positions: instrument_token -> [gtts]
+      const map = new Map();
+      for (const t of activeTriggers) {
+        const tok = t.condition && t.condition.instrument_token;
+        if (tok == null) continue;
+        if (!map.has(tok)) map.set(tok, []);
+        map.get(tok).push(t);
+      }
+      cache = { mode, map, keys: new Set(), icon: ICON_ROCKET };
     }
 
-    cache = { mode, keys, icon };
     applyMarkers();
   }
 
@@ -220,7 +303,6 @@
       if (location.href !== last) {
         last = location.href;
         clearAllIcons();
-        // give the SPA a moment to render the new page before refetching
         setTimeout(refreshData, 500);
       }
     }, 800);
@@ -228,7 +310,7 @@
 
   function init() {
     refreshData();
-    apiTimer = setInterval(refreshData, API_REFRESH_MS);
+    setInterval(refreshData, API_REFRESH_MS);
     startObserving();
     watchUrlChanges();
   }
