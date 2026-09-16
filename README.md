@@ -21,20 +21,9 @@ hardcoded, cached, or sent anywhere outside kite.zerodha.com.
 2. "Load unpacked" -> select this `kite-gtt-marker` folder.
 3. Open kite.zerodha.com and go to Positions / Holdings / GTT.
 
-## Known limitation — table selectors are a best guess
+## Would like to see how it looks
 
-I built the matching logic against Kite's real API responses, but I don't
-have the live HTML of kite.zerodha.com's tables, so the DOM-matching code
-assumes a fairly generic structure: `table tbody tr`, with the instrument
-name living in the first `<td>`.
-
-If icons don't show up:
-1. Open DevTools console on the page — the script logs warnings
-   (`[Kite GTT Marker] ...`) if the enctoken cookie isn't found or a
-   request fails.
-2. If auth is fine but icons still don't appear, right-click a row ->
-   Inspect, and send me the row's HTML — I'll tighten the selector
-   (`firstCell()` in content.js) to match the exact column Kite uses.
+https://youtu.be/ppTNjmQfnt0
 
 ## Tuning
 
